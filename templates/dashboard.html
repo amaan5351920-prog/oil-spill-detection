@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🛢️ Oil Spill Detection & Vessel Attribution System</title>
+    <!-- Leaflet for maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Chart.js for score charts -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #1a237e;
+            --accent: #0d47a1;
+            --danger: #c62828;
+            --success: #2e7d32;
+            --warning: #f57f17;
+        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; }
+        .navbar { background: linear-gradient(135deg, var(--primary), var(--accent)); }
+        .card { border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .card-header { font-weight: 600; }
+        #map { height: 450px; border-radius: 8px; }
+        .stat-card { text-align: center; padding: 1.2rem; }
+        .stat-value { font-size: 1.8rem; font-weight: 700; color: var(--primary); }
+        .stat-label { font-size: 0.85rem; color: #666; margin-top: 4px; }
+        .score-bar { height: 8px; border-radius: 4px; background: #e0e0e0; overflow: hidden; }
+        .score-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+        .score-high { background: var(--danger); }
+        .score-med { background: var(--warning); }
+        .score-low { background: var(--success); }
+        .vessel-row { cursor: pointer; transition: background 0.2s; }
+        .vessel-row:hover { background: #e3f2fd; }
+        .vessel-row.suspect { border-left: 4px solid var(--danger); }
+        .phase-indicator { display: flex; gap: 1rem; margin-bottom: 1rem; }
+        .phase { padding: 0.5rem 1rem; border-radius: 20px; font-size: 0.8rem; font-weight: 600; }
+        .phase-active { background: var(--accent); color: white; }
+        .phase-done { background: var(--success); color: white; }
+        .phase-pending { background: #e0e0e0; color: #666; }
+        .loading-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+            z-index: 9999; justify-content: center; align-items: center; }
+        .loading-overlay.active { display: flex; }
+        .spinner { width: 60px; height: 60px; border: 6px solid #fff; border-top-color: var(--accent);
+            border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .legend { position: absolute; bottom: 30px; right: 10px; background: white; padding: 10px;
+            border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); z-index: 1000; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="text-center text-white">
+            <div class="spinner mb-3"></div>
+            <div id="loadingText">Processing pipeline...</div>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark px-3">
+        <span class="navbar-brand mb-0 h1">🛢️ Oil Spill Detection & Attribution</span>
+        <span class="text-light small">Maritime Environmental Intelligence</span>
+    </nav>
+
+    <div class="container-fluid py-3">
+        <!-- Pipeline Status -->
+        <div class="phase-indicator mb-3" id="phaseIndicator">
+            <div class="phase phase-pending" id="phase-detect">1. Detect</div>
+            <div class="phase phase-pending" id="phase-analyse">2. Analyse</div>
+            <div class="phase phase-pending" id="phase-drift">3. Drift Model</div>
+            <div class="phase phase-pending" id="phase-attribute">4. Attribution</div>
+        </div>
+
+        <div class="row g-3">
+            <!-- Left column: Controls + Map -->
+            <div class="col-lg-8">
+                <!-- Controls -->
+                <div class="card mb-3">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <span>🎯 Pipeline Controls</span>
+                        <button class="btn btn-primary btn-sm" id="btnRunDemo" onclick="runDemo()">
+                            ▶ Run Demo Pipeline
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <label class="form-label small">Latitude</label>
+                                <input type="number" class="form-control form-control-sm" id="inputLat"
+                                       value="20.5" step="0.1">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Longitude</label>
+                                <input type="number" class="form-control form-control-sm" id="inputLon"
+                                       value="60.3" step="0.1">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small">Detection Time</label>
+                                <input type="datetime-local" class="form-control form-control-sm" id="inputTime"
+                                       value="2025-01-01T12:00">
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="chkAutoZoom" checked>
+                                    <label class="form-check-label small" for="chkAutoZoom">Auto-zoom</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row g-2 mt-1">
+                            <div class="col-md-3">
+                                <label class="form-label small">Location Preset</label>
+                                <select class="form-select form-select-sm" id="inputLocation"
+                                        onchange="setLocation(this.value)">
+                                    <option value="">Custom...</option>
+                                    <option value="19.0,72.8">Mumbai Coast, India</option>
+                                    <option value="25.3,55.3">Dubai, UAE</option>
+                                    <option value="29.5,49.5">Persian Gulf</option>
+                                    <option value="26.0,-90.0">Gulf of Mexico</option>
+                                    <option value="20.5,60.3">Arabian Sea</option>
+                                    <option value="1.3,103.8">Strait of Malacca</option>
+                                    <option value="35.0,-5.0">Strait of Gibraltar</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Upload SAR Image</label>
+                                <input type="file" class="form-control form-control-sm" id="inputFile"
+                                       accept=".tif,.tiff,.png,.jpg,.npy"
+                                       onchange="autoSetLocation(this)">
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end">
+                                <button class="btn btn-outline-primary btn-sm" onclick="uploadImage()">
+                                    Upload & Detect
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Map -->
+                <div class="card mb-3">
+                    <div class="card-body p-2">
+                        <div id="map"></div>
+                        <div class="legend">
+                            <div><span style="color:#e74c3c">●</span> Hindcast (origin search)</div>
+                            <div><span style="color:#3498db">●</span> Forecast (predicted drift)</div>
+                            <div><span style="color:#e67e22">●</span> Suspect vessel track</div>
+                            <div><span style="color:#95a5a6">●</span> Other vessel tracks</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right column: Results -->
+            <div class="col-lg-4">
+                <!-- Summary Stats -->
+                <div class="card mb-3" id="statsCard" style="display:none;">
+                    <div class="card-header bg-white">📊 Detection Summary</div>
+                    <div class="card-body p-2">
+                        <div class="row g-2">
+                            <div class="col-4 stat-card">
+                                <div class="stat-value" id="statSlicks">0</div>
+                                <div class="stat-label">Slicks</div>
+                            </div>
+                            <div class="col-4 stat-card">
+                                <div class="stat-value" id="statArea">0</div>
+                                <div class="stat-label">Area (km²)</div>
+                            </div>
+                            <div class="col-4 stat-card">
+                                <div class="stat-value" id="statVessels">0</div>
+                                <div class="stat-label">Vessels</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Origin Info -->
+                <div class="card mb-3" id="originCard" style="display:none;">
+                    <div class="card-header bg-white">📍 Estimated Origin</div>
+                    <div class="card-body">
+                        <p class="mb-1"><strong>Lat:</strong> <span id="originLat">-</span></p>
+                        <p class="mb-1"><strong>Lon:</strong> <span id="originLon">-</span></p>
+                        <p class="mb-1"><strong>Time:</strong> <span id="originTime">-</span></p>
+                        <p class="mb-0"><strong>Confidence:</strong>
+                            <span id="originConfidence" class="badge">-</span>
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Slick Geometry -->
+                <div class="card mb-3" id="geometryCard" style="display:none;">
+                    <div class="card-header bg-white">📐 Slick Geometry</div>
+                    <div class="card-body" id="geometryBody">
+                    </div>
+                </div>
+
+                <!-- Top Suspect -->
+                <div class="card mb-3" id="suspectCard" style="display:none;">
+                    <div class="card-header bg-white text-danger">🚨 Top Suspect Vessel</div>
+                    <div class="card-body" id="suspectBody">
+                    </div>
+                </div>
+
+                <!-- Vessel Leaderboard -->
+                <div class="card mb-3" id="leaderboardCard" style="display:none;">
+                    <div class="card-header bg-white">🚢 Vessel Attribution Scores</div>
+                    <div class="card-body p-2" style="max-height:400px;overflow-y:auto;">
+                        <table class="table table-sm table-hover mb-0" id="vesselTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Vessel</th>
+                                    <th>Type</th>
+                                    <th>Score</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+        // ---- Map Setup ----
+        const map = L.map('map', { zoomControl: true }).setView([20.5, 60.3], 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png?v=2', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 19,
+        }).addTo(map);
+
+        let trajectoryLayer = L.layerGroup().addTo(map);
+        let currentRunId = null;
+
+        // ---- Phase indicator ----
+        function setPhase(phase) {
+            const phases = ['detect', 'analyse', 'drift', 'attribute'];
+            const idx = phases.indexOf(phase);
+            phases.forEach((p, i) => {
+                const el = document.getElementById('phase-' + p);
+                el.className = 'phase ' + (i < idx ? 'phase-done' : i === idx ? 'phase-active' : 'phase-pending');
+            });
+        }
+
+        // ---- Loading overlay ----
+        function showLoading(text) {
+            document.getElementById('loadingText').textContent = text;
+            document.getElementById('loadingOverlay').classList.add('active');
+        }
+        function hideLoading() {
+            document.getElementById('loadingOverlay').classList.remove('active');
+        }
+
+        // ---- Run Demo Pipeline ----
+        async function runDemo() {
+            const lat = parseFloat(document.getElementById('inputLat').value);
+            const lon = parseFloat(document.getElementById('inputLon').value);
+            const time = document.getElementById('inputTime').value;
+
+            showLoading('Running full demo pipeline...');
+            setPhase('detect');
+
+            try {
+                const resp = await fetch('/api/demo', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({lat, lon, time: time + ':00'}),
+                });
+                if (resp.status === 405 || resp.status === 404) {
+                    throw new Error('Flask server not running! Run: python main.py web');
+                }
+                const data = await resp.json();
+                if (data.error) throw new Error(data.error);
+
+                currentRunId = data.run_id;
+                setPhase('attribute');
+                await loadResults(data.run_id);
+
+            } catch (err) {
+                alert('Error: ' + err.message + '\n\nMake sure Flask server is running:\npython main.py web');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // ---- Upload Image ----
+        async function uploadImage() {
+            const file = document.getElementById('inputFile').files[0];
+            if (!file) { alert('Select an image first'); return; }
+
+            // Clear old results
+            document.getElementById('statsCard').style.display = 'none';
+            document.getElementById('originCard').style.display = 'none';
+            document.getElementById('geometryCard').style.display = 'none';
+            document.getElementById('suspectCard').style.display = 'none';
+            document.getElementById('leaderboardCard').style.display = 'none';
+            trajectoryLayer.clearLayers();
+
+            const formData = new FormData();
+            formData.append('image', file);
+            formData.append('time', document.getElementById('inputTime').value + ':00');
+            formData.append('lat', document.getElementById('inputLat').value);
+            formData.append('lon', document.getElementById('inputLon').value);
+
+            showLoading('Detecting oil spills...');
+            setPhase('detect');
+
+            try {
+                const resp = await fetch('/api/detect', { method: 'POST', body: formData });
+                if (resp.status === 405 || resp.status === 404) {
+                    throw new Error('Flask server not running! Run: python main.py web');
+                }
+                const data = await resp.json();
+                if (data.error) throw new Error(data.error);
+
+                currentRunId = data.run_id;
+                setPhase('attribute');
+                await loadResults(data.run_id);
+
+            } catch (err) {
+                alert('Error: ' + err.message + '\n\nMake sure Flask server is running:\npython main.py web');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // ---- Load Results ----
+        async function loadResults(runId) {
+            // Summary
+            const resResp = await fetch('/api/result/' + runId);
+            const res = await resResp.json();
+            displaySummary(res.summary);
+
+            // Trajectories
+            const trajResp = await fetch('/api/trajectory/' + runId);
+            const traj = await trajResp.json();
+            displayTrajectories(traj);
+
+            // Vessels
+            const vessResp = await fetch('/api/vessels/' + runId);
+            const vess = await vessResp.json();
+            displayVessels(vess);
+        }
+
+        // ---- Display Functions ----
+        function displaySummary(summary) {
+            if (!summary) return;
+
+            document.getElementById('statsCard').style.display = '';
+            const d = summary.detection || {};
+            document.getElementById('statSlicks').textContent = d.num_slicks || 0;
+            document.getElementById('statArea').textContent = (d.total_area_km2 || 0).toFixed(2);
+            document.getElementById('statVessels').textContent =
+                (summary.attribution || {}).vessels_analysed || 0;
+
+            // Origin
+            const hc = summary.hindcast || {};
+            if (hc.origin_lat) {
+                document.getElementById('originCard').style.display = '';
+                document.getElementById('originLat').textContent = hc.origin_lat.toFixed(4);
+                document.getElementById('originLon').textContent = hc.origin_lon.toFixed(4);
+                document.getElementById('originTime').textContent = hc.origin_time || '-';
+                const conf = document.getElementById('originConfidence');
+                conf.textContent = hc.confidence || '-';
+                conf.className = 'badge bg-' + (hc.confidence === 'high' ? 'danger' :
+                    hc.confidence === 'medium' ? 'warning' : 'secondary');
+            }
+
+            // Geometry
+            const geoKeys = Object.keys(summary).filter(k => k.startsWith('slick_'));
+            if (geoKeys.length > 0) {
+                document.getElementById('geometryCard').style.display = '';
+                let html = '';
+                geoKeys.forEach(k => {
+                    const g = summary[k];
+                    html += `<div class="mb-2 pb-2 border-bottom">
+                        <strong>${k.replace('_', ' ').toUpperCase()}</strong><br>
+                        Area: ${g.area_km2?.toFixed(4) || '-'} km² |
+                        Perimeter: ${g.perimeter_m?.toFixed(0) || '-'} m<br>
+                        Compactness: ${g.compactness?.toFixed(3) || '-'} |
+                        Elongation: ${g.elongation?.toFixed(3) || '-'}<br>
+                        Fractal dim: ${g.fractal_dimension?.toFixed(2) || '-'} |
+                        Age: ${g.spill_age_hours?.toFixed(1) || '-'} h
+                    </div>`;
+                });
+                document.getElementById('geometryBody').innerHTML = html;
+            }
+
+            // Top suspect
+            const attr = summary.attribution || {};
+            if (attr.top_suspect) {
+                document.getElementById('suspectCard').style.display = '';
+                const s = attr.top_suspect;
+                document.getElementById('suspectBody').innerHTML = `
+                    <h5 class="text-danger mb-2">${s.name}</h5>
+                    <p class="mb-1"><strong>MMSI:</strong> ${s.mmsi} | <strong>IMO:</strong> ${s.imo || '-'}</p>
+                    <p class="mb-1"><strong>Type:</strong> ${s.type} | <strong>Flag:</strong> ${s.flag}</p>
+                    <p class="mb-1"><strong>Score:</strong> ${(s.score * 100).toFixed(1)}% |
+                       <strong>Min dist:</strong> ${s.min_distance_km?.toFixed(1) || '-'} km</p>
+                    ${s.anomalies && s.anomalies.length > 0 ?
+                        `<p class="mb-0"><strong>Anomalies:</strong><br>
+                        ${s.anomalies.map(a => `<small class="text-muted">• ${a}</small>`).join('<br>')}</p>` : ''}
+                `;
+            }
+        }
+
+        function displayTrajectories(geojson) {
+            trajectoryLayer.clearLayers();
+            if (!geojson || !geojson.features) return;
+
+            let bounds = [];
+            geojson.features.forEach(f => {
+                if (f.geometry.type === 'LineString') {
+                    const coords = f.geometry.coordinates.map(c => [c[1], c[0]]);
+                    const props = f.properties;
+                    const color = props.color || '#999';
+                    const weight = props.width || 1.5;
+                    L.polyline(coords, {
+                        color: color, weight: weight, opacity: 0.6,
+                    }).addTo(trajectoryLayer);
+                    bounds.push(...coords);
+                } else if (f.geometry.type === 'Point') {
+                    const [lon, lat] = f.geometry.coordinates;
+                    const props = f.properties;
+                    L.circleMarker([lat, lon], {
+                        radius: props.radius || 8,
+                        fillColor: props.color || '#e74c3c',
+                        color: '#fff', weight: 2, fillOpacity: 0.9,
+                    }).addTo(trajectoryLayer).bindPopup(`<b>${props.label || 'Point'}</b>`);
+                    bounds.push([lat, lon]);
+                }
+            });
+
+            if (document.getElementById('chkAutoZoom').checked && bounds.length > 0) {
+                map.fitBounds(bounds, { padding: [30, 30] });
+            }
+        }
+
+        function displayVessels(data) {
+            if (!data || !data.vessels) return;
+            document.getElementById('leaderboardCard').style.display = '';
+            const tbody = document.querySelector('#vesselTable tbody');
+            tbody.innerHTML = '';
+
+            data.vessels.slice(0, 15).forEach(v => {
+                const scorePct = (v.total_score * 100).toFixed(1);
+                const scoreClass = v.total_score > 0.5 ? 'score-high' :
+                                   v.total_score > 0.25 ? 'score-med' : 'score-low';
+                const rowClass = v.rank === 1 ? 'suspect' : '';
+                tbody.innerHTML += `
+                    <tr class="vessel-row ${rowClass}">
+                        <td><strong>${v.rank}</strong></td>
+                        <td>
+                            <div>${v.name}</div>
+                            <small class="text-muted">${v.mmsi} • ${v.flag}</small>
+                        </td>
+                        <td><small>${v.type}</small></td>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="score-bar flex-grow-1">
+                                    <div class="score-fill ${scoreClass}"
+                                         style="width:${scorePct}%"></div>
+                                </div>
+                                <small class="text-nowrap">${scorePct}%</small>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        // ---- Auto-set location ----
+        function setLocation(val) {
+            if (!val) return;
+            const [lat, lon] = val.split(',').map(Number);
+            document.getElementById('inputLat').value = lat;
+            document.getElementById('inputLon').value = lon;
+        }
+
+        function autoSetLocation(input) {
+            const filename = input.files[0]?.name || '';
+            const locationMap = {
+                'mumbai': '19.0,72.8',
+                'dubai': '25.3,55.3',
+                'persian': '29.5,49.5',
+                'gulf_of_mexico': '26.0,-90.0',
+                'malacca': '1.3,103.8',
+                'gibraltar': '35.0,-5.0',
+                'arabian': '20.5,60.3',
+            };
+            const lower = filename.toLowerCase();
+            for (const [key, val] of Object.entries(locationMap)) {
+                if (lower.includes(key)) {
+                    setLocation(val);
+                    document.getElementById('inputLocation').value = val;
+                    return;
+                }
+            }
+        }
+
+        // ---- Init ----
+        map.setView([20.5, 60.3], 5);
+    </script>
+</body>
+</html>

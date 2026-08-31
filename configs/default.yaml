@@ -1,0 +1,38 @@
+# Oil Spill Detection & Vessel Attribution — Default Configuration
+
+pipeline:
+  output_dir: "./output"
+
+detection:
+  model_weights_path: null
+  threshold: 0.5
+  min_slick_area_px: 50
+  pixel_size_m: 10.0   # Ground Sample Distance in metres
+
+drift:
+  hindcast_hours: 36
+  forecast_hours: 48
+  n_particles: 200
+  particle_spread_m: 500
+  wind_drift_coefficient: 0.035
+  wind_drift_angle_deg: 15.0
+  turbulent_diffusivity: 10.0   # m²/s
+
+attribution:
+  search_radius_km: 100
+  origin_radius_km: 5
+  vessel_types_filter: null   # null = all types
+
+scoring_weights:
+  proximity: 0.25
+  temporal: 0.15
+  trajectory: 0.20
+  anomaly: 0.20
+  vessel_type: 0.10
+  flag_risk: 0.05
+  draught: 0.05
+
+web:
+  host: "127.0.0.1"
+  port: 5000
+  debug: false
