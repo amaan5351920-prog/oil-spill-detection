@@ -94,6 +94,8 @@ def create_app(config: Optional[dict] = None) -> Flask:
         import cv2
         file_bytes = np.frombuffer(file.read(), np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return jsonify({'error': 'Cannot read image. Please upload a PNG or JPG file.'}), 400
 
         import tempfile
         tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
