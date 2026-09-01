@@ -1,17 +1,5 @@
-# Oil Spill Detection & Vessel Attribution System
-# Core
 numpy>=1.24.0
-opencv-python>=4.8.0
+opencv-python-headless>=4.8.0
 scipy>=1.11.0
-
-# Web interface
 flask>=3.0.0
-
-# Data handling (optional, for NetCDF support)
-# netCDF4>=1.6.0
-
-# Visualization (optional, for matplotlib plots)
-# matplotlib>=3.7.0
-
-# Testing
-pytest>=7.0.0
+gunicorn>=21.0.0
